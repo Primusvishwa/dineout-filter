@@ -22,9 +22,8 @@ deliberately excluded, since they aren't available to everyone.
 
 ## How it works
 
-Swiggy's own MCP server exposes a `search_restaurants_dineout` tool, but it returns an
-empty payload for every query (see [Notes](#notes)). So the data comes from Swiggy's
-public Dineout pages instead.
+There's no public API for Dineout listings, so the data comes from Swiggy's public Dineout
+pages, which are server-rendered.
 
 ```
 browser ──▶ /api/places       ──▶ Swiggy place-autocomplete
