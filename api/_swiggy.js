@@ -165,10 +165,12 @@ export async function findPlaces(input) {
 // Measured against Swiggy's own coordinates, it lands within ~0.5km on localities.
 async function geocode(text) {
   const parts = text.split(",").map((s) => s.trim()).filter(Boolean);
+  // Swiggy's descriptions end "…, City, State, India", so keeping the tail rather than
+  // naming a city keeps these fallbacks correct in every city it covers.
   const attempts = [
     text,
-    [...parts.slice(0, 2), "Bengaluru", "India"].join(", "),
-    [parts[0], "Bengaluru", "India"].join(", "),
+    [parts[0], ...parts.slice(-3)].join(", "),
+    [parts[0], ...parts.slice(-2)].join(", "),
   ];
   for (const query of attempts) {
     try {

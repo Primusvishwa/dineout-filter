@@ -211,7 +211,7 @@ export default function DineoutFilter() {
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search any area in Bengaluru…"
+                placeholder="Search any area — Bengaluru, Chennai, Hyderabad…"
                 style={{
                   flex: 1,
                   border: "none",
