@@ -52,7 +52,7 @@ function locationCookie(loc) {
   return `userLocation=${value}; location=${value}`;
 }
 
-async function getHtml(path, loc) {
+async function getHtml(path, loc, retry = true) {
   if (!sessionJar) await warmUp();
   const res = await fetch(ORIGIN + path, {
     headers: {
@@ -61,6 +61,11 @@ async function getHtml(path, loc) {
       Cookie: `${sessionJar}; ${locationCookie(loc)}`,
     },
   });
+  // a stale jar reads as a WAF rejection; a fresh warm-up usually clears it
+  if ((res.status === 403 || res.status === 429) && retry) {
+    await warmUp();
+    return getHtml(path, loc, false);
+  }
   if (!res.ok) throw new Error(`${path} responded ${res.status}`);
   return res.text();
 }
@@ -215,6 +220,12 @@ export async function collectRestaurants(loc) {
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.value;
 
   const pages = await mapLimit(LISTING_PATHS, LISTING_PATHS.length, (p) => getHtml(p, loc));
+  // Every page failing means Swiggy refused us, which is not the same as an area
+  // genuinely having no discounted restaurants — don't let it read as an empty result.
+  if (pages.every((p) => !p)) {
+    throw new Error("Swiggy refused every listing request (likely a WAF block).");
+  }
+
   const seen = new Map();
   for (const html of pages) {
     if (!html) continue;
@@ -228,7 +239,7 @@ export async function collectRestaurants(loc) {
   const list = [...seen.values()].slice(0, MAX_HOURS_LOOKUPS);
   const hours = await mapLimit(list, 24, (r) => weeklyHours(r.link, loc));
   const value = list.map(({ link, ...rest }, i) => ({ ...rest, hours: hours[i] }));
-  cache.set(key, { at: Date.now(), value });
+  if (value.length) cache.set(key, { at: Date.now(), value });
   return value;
 }
 
