@@ -168,12 +168,45 @@ export async function findPlaces(input) {
   }));
 }
 
-export async function resolvePlace(placeId) {
-  const data = await postJson("/dapi/misc/address-recommend", { place_id: placeId });
-  const hit = data?.data?.[0];
-  const point = hit?.geometry?.location;
-  if (!point) return null;
-  return { lat: point.lat, lng: point.lng, address: hit.formatted_address };
+// Swiggy's WAF refuses address-recommend from datacenter IPs (it works from a home
+// connection), so OpenStreetMap covers that one step when the primary is blocked.
+// Measured against Swiggy's own coordinates, it lands within ~0.5km on localities.
+async function geocode(text) {
+  const parts = text.split(",").map((s) => s.trim()).filter(Boolean);
+  const attempts = [
+    text,
+    [...parts.slice(0, 2), "Bengaluru", "India"].join(", "),
+    [parts[0], "Bengaluru", "India"].join(", "),
+  ];
+  for (const query of attempts) {
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=in&q=${encodeURIComponent(query)}`,
+        { headers: { "User-Agent": "dineout-filter/1.0 (personal project)" } }
+      );
+      if (!res.ok) continue;
+      const hit = (await res.json())[0];
+      if (hit) return { lat: +hit.lat, lng: +hit.lon, address: text };
+    } catch {
+      // try the next, looser form of the query
+    }
+  }
+  return null;
+}
+
+export async function resolvePlace(placeId, text) {
+  if (placeId) {
+    try {
+      const data = await postJson("/dapi/misc/address-recommend", { place_id: placeId });
+      const point = data?.data?.[0]?.geometry?.location;
+      if (point) {
+        return { lat: point.lat, lng: point.lng, address: data.data[0].formatted_address };
+      }
+    } catch {
+      // blocked or unavailable — fall through to the geocoder
+    }
+  }
+  return text ? geocode(text) : null;
 }
 
 export async function collectRestaurants(loc) {

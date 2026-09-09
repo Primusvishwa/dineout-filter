@@ -45,8 +45,9 @@ function isOpenNow(hours, now = new Date()) {
 }
 
 async function loadRestaurants(place) {
+  const text = [place.label, place.sublabel].filter(Boolean).join(", ");
   const query = place.placeId
-    ? `placeId=${encodeURIComponent(place.placeId)}`
+    ? `placeId=${encodeURIComponent(place.placeId)}&text=${encodeURIComponent(text)}`
     : `lat=${place.lat}&lng=${place.lng}&address=${encodeURIComponent(place.address)}`;
   const res = await fetch(`/api/restaurants?${query}`);
   const body = await res.json();

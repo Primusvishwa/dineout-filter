@@ -9,8 +9,8 @@ export default async function handler(req, res) {
     let location;
 
     if (placeId) {
-      location = await resolvePlace(placeId);
-      if (!location) return sendJson(res, 502, { error: "Could not resolve that place." });
+      location = await resolvePlace(placeId, params.get("text") || "");
+      if (!location) return sendJson(res, 502, { error: "Could not pin that place on the map." });
     } else {
       location = {
         lat: +params.get("lat"),
