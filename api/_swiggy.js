@@ -17,8 +17,6 @@ const LISTING_PATHS = [
   "/casual-dining-restaurants-dineout-near-me",
 ];
 
-const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-const MAX_HOURS_LOOKUPS = 60;
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
 // Warm instances reuse this; cold starts rebuild it. Harmless either way.
@@ -135,17 +133,6 @@ function normalize(entry) {
   };
 }
 
-async function weeklyHours(link, loc) {
-  const html = await getHtml(link.replace(ORIGIN, ""), loc);
-  const block = /"outletTiming":\{"infoList":(\[[\s\S]*?\])\}/.exec(html);
-  if (!block) return null;
-  const byDay = {};
-  for (const m of block[1].matchAll(/"title":"([^"]+)","subtitle":"([^"]+)"/g)) byDay[m[1]] = m[2];
-  // the current day is labelled "Today" rather than by name
-  if (byDay.Today) byDay[DAYS[(new Date().getDay() + 6) % 7]] = byDay.Today;
-  return DAYS.map((d) => byDay[d] || "");
-}
-
 async function mapLimit(items, limit, fn) {
   const results = new Array(items.length);
   let cursor = 0;
@@ -236,9 +223,7 @@ export async function collectRestaurants(loc) {
     }
   }
 
-  const list = [...seen.values()].slice(0, MAX_HOURS_LOOKUPS);
-  const hours = await mapLimit(list, 24, (r) => weeklyHours(r.link, loc));
-  const value = list.map(({ link, ...rest }, i) => ({ ...rest, hours: hours[i] }));
+  const value = [...seen.values()].map(({ link, ...rest }) => rest);
   if (value.length) cache.set(key, { at: Date.now(), value });
   return value;
 }

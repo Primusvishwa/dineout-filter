@@ -1,6 +1,6 @@
 import { collectRestaurants, resolvePlace, sendJson, queryOf } from "./_swiggy.js";
 
-export const config = { maxDuration: 60 };
+export const config = { maxDuration: 30 };
 
 export default async function handler(req, res) {
   try {

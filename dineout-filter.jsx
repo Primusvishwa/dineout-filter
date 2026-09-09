@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { Star, MapPin, Clock, X, ArrowUpDown, Search, Loader2 } from "lucide-react";
+import { Star, MapPin, X, ArrowUpDown, Search, Loader2 } from "lucide-react";
 
 // Where the app opens before you pick somewhere else.
 const DEFAULT_LOCATION = {
@@ -7,42 +7,6 @@ const DEFAULT_LOCATION = {
   lng: 77.7126571,
   address: "Hoodi, Mahadevapura, Bengaluru, Karnataka 560048, India",
 };
-
-function parseTime(token) {
-  const t = token.trim();
-  if (/^noon$/i.test(t)) return 720;
-  if (/^midnight$/i.test(t)) return 0;
-  const m = /^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/i.exec(t);
-  if (!m) return null;
-  const hour = (+m[1] % 12) + (/PM/i.test(m[3]) ? 12 : 0);
-  return hour * 60 + +(m[2] || 0);
-}
-
-function rangesFor(spec) {
-  if (!spec) return [];
-  return spec
-    .split("·")
-    .map((part) => {
-      const [from, to] = part.split("-");
-      if (!to) return null;
-      const start = parseTime(from);
-      const end = parseTime(to);
-      return start === null || end === null ? null : [start, end];
-    })
-    .filter(Boolean);
-}
-
-function isOpenNow(hours, now = new Date()) {
-  // a few outlets publish no timings at all, and those read as closed rather than crash
-  const dayFor = (i) => (typeof hours === "string" ? hours : hours?.[i] || "");
-  const today = (now.getDay() + 6) % 7;
-  const mins = now.getHours() * 60 + now.getMinutes();
-  // end <= start means the shift runs past midnight, so it also covers early today
-  return (
-    rangesFor(dayFor(today)).some(([s, e]) => (e > s ? mins >= s && mins < e : mins >= s)) ||
-    rangesFor(dayFor((today + 6) % 7)).some(([s, e]) => e <= s && mins < e)
-  );
-}
 
 async function loadRestaurants(place) {
   const text = [place.label, place.sublabel].filter(Boolean).join(", ");
@@ -52,10 +16,7 @@ async function loadRestaurants(place) {
   const res = await fetch(`/api/restaurants?${query}`);
   const body = await res.json();
   if (!res.ok) throw new Error(body.error || "Could not reach Swiggy.");
-  return {
-    location: body.location,
-    restaurants: body.restaurants.map((r) => ({ ...r, openNow: isOpenNow(r.hours) })),
-  };
+  return { location: body.location, restaurants: body.restaurants };
 }
 
 // Fine-grained discount tiers, instead of Swiggy's 10-40% / 50% split
@@ -91,7 +52,6 @@ export default function DineoutFilter() {
   const [selectedCosts, setSelectedCosts] = useState([]);
   const [minRating, setMinRating] = useState(0);
   const [maxDistance, setMaxDistance] = useState(10);
-  const [openNowOnly, setOpenNowOnly] = useState(false);
   const [sortBy, setSortBy] = useState("discount-desc");
 
   const [restaurants, setRestaurants] = useState([]);
@@ -172,7 +132,6 @@ export default function DineoutFilter() {
     setSelectedCosts([]);
     setMinRating(0);
     setMaxDistance(10);
-    setOpenNowOnly(false);
   };
 
   const filtered = useMemo(() => {
@@ -183,7 +142,6 @@ export default function DineoutFilter() {
       if (selectedCosts.length && !selectedCosts.includes(bucketFor(r.costForTwo).label)) return false;
       if (r.rating < minRating) return false;
       if (r.distanceKm > maxDistance) return false;
-      if (openNowOnly && !r.openNow) return false;
       return true;
     });
 
@@ -202,10 +160,10 @@ export default function DineoutFilter() {
       }
     });
     return list;
-  }, [restaurants, selectedTiers, selectedCuisines, selectedCosts, minRating, maxDistance, openNowOnly, sortBy]);
+  }, [restaurants, selectedTiers, selectedCuisines, selectedCosts, minRating, maxDistance, sortBy]);
 
   const activeFilterCount =
-    selectedTiers.length + selectedCuisines.length + selectedCosts.length + (minRating > 0 ? 1 : 0) + (maxDistance < 10 ? 1 : 0) + (openNowOnly ? 1 : 0);
+    selectedTiers.length + selectedCuisines.length + selectedCosts.length + (minRating > 0 ? 1 : 0) + (maxDistance < 10 ? 1 : 0);
 
   return (
     <div
@@ -495,16 +453,6 @@ export default function DineoutFilter() {
               />
             </div>
 
-            {/* Open now */}
-            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={openNowOnly}
-                onChange={(e) => setOpenNowOnly(e.target.checked)}
-                style={{ accentColor: "#A63D40" }}
-              />
-              Open now only
-            </label>
           </div>
 
           {/* Results */}
@@ -605,9 +553,6 @@ export default function DineoutFilter() {
                           </span>
                           <span style={{ display: "flex", alignItems: "center", gap: 3 }}>
                             <Star size={11} fill="#D9A521" color="#D9A521" /> {r.rating}
-                          </span>
-                          <span style={{ display: "flex", alignItems: "center", gap: 3, color: r.openNow ? "#4A7A5A" : "#A63D40" }}>
-                            <Clock size={11} /> {r.openNow ? "Open now" : "Closed"}
                           </span>
                         </div>
                       </div>
