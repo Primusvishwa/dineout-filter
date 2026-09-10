@@ -2,24 +2,19 @@
 // and the Vite dev middleware so the two can't drift apart.
 
 const ORIGIN = "https://www.swiggy.com";
-const NEXT_DATA = /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/;
+const LISTING_ENDPOINT = "/api/seo/getListing";
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
-// Each of these re-ranks around whatever location the cookie carries. Kept deliberately
-// short: every extra page is another round trip inside the function's time budget.
-const LISTING_PATHS = [
-  "/dineout",
-  "/buffet-restaurants-dineout-near-me",
-  "/rooftop-restaurants-dineout-near-me",
-  "/microbrewery-restaurants-dineout-near-me",
-  "/fine-dining-restaurants-dineout-near-me",
-  "/casual-dining-restaurants-dineout-near-me",
-];
+const PAGE_SIZE = 15;
+const BATCH = 8;
+const MAX_PAGES = 24;
+// The UI's distance slider tops out at 10km, so there's nothing to gain past it.
+const REACH_KM = 10;
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
-// Warm instances reuse this; cold starts rebuild it. Harmless either way.
+// Warm instances reuse these; cold starts rebuild them. Harmless either way.
 const cache = new Map();
 
 const BROWSER_HEADERS = {
@@ -50,23 +45,8 @@ function locationCookie(loc) {
   return `userLocation=${value}; location=${value}`;
 }
 
-async function getHtml(path, loc, retry = true) {
-  if (!sessionJar) await warmUp();
-  const res = await fetch(ORIGIN + path, {
-    headers: {
-      ...BROWSER_HEADERS,
-      Accept: "text/html,application/xhtml+xml",
-      Cookie: `${sessionJar}; ${locationCookie(loc)}`,
-    },
-  });
-  // a stale jar reads as a WAF rejection; a fresh warm-up usually clears it
-  if ((res.status === 403 || res.status === 429) && retry) {
-    await warmUp();
-    return getHtml(path, loc, false);
-  }
-  if (!res.ok) throw new Error(`${path} responded ${res.status}`);
-  return res.text();
-}
+const uuid = () =>
+  globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now();
 
 async function postJson(path, body, retry = true) {
   if (!sessionJar) await warmUp();
@@ -93,22 +73,93 @@ async function postJson(path, body, retry = true) {
   return res.json();
 }
 
-function restaurantsFrom(html) {
-  const match = NEXT_DATA.exec(html);
-  if (!match) return [];
-  let data;
-  try {
-    data = JSON.parse(match[1]);
-  } catch {
-    return [];
+// The listing widget pages through an opaque base64 token that decodes to
+// {collectionId, offset}. Re-encoding it with our own offset means pages can be
+// requested in parallel instead of walking them one cursor at a time.
+function offsetToken(collection, offset) {
+  return {
+    dineout_seo_restaurant: Buffer.from(
+      JSON.stringify({ ...collection, offset })
+    ).toString("base64"),
+    dineout_seo_sort_and_filter: "",
+  };
+}
+
+async function listingPage(loc, collection, offset, retry = true) {
+  if (!sessionJar) await warmUp();
+
+  const body = {
+    tags: "layout_dineout_seo",
+    isFiltered: true,
+    sortAttribute: "distance",
+    queryId: "seo-data-" + uuid(),
+    metaMap: {
+      locality: "",
+      ambienceTag: "",
+      restaurantCategory: "",
+      allCuisines: "",
+      landmarkName: "",
+      brandId: "",
+      dinersoneTag: "",
+    },
+    seoParams: {
+      apiName: "DOCollectionApi",
+      brandId: "",
+      seoUrl: "www.swiggy.com/dineout",
+      pageType: "DO_HOME_PAGE",
+      businessLine: "DINEOUT",
+    },
+  };
+  if (collection) body.widgetOffset = offsetToken(collection, offset);
+
+  const res = await fetch(
+    `${ORIGIN}${LISTING_ENDPOINT}?lat=${loc.lat}&lng=${loc.lng}&apiV2=true`,
+    {
+      method: "POST",
+      headers: {
+        ...BROWSER_HEADERS,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Origin: ORIGIN,
+        Referer: ORIGIN + "/dineout",
+        latitude: String(loc.lat),
+        longitude: String(loc.lng),
+        Cookie: `${sessionJar}; ${locationCookie(loc)}`,
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if ((res.status === 403 || res.status === 429) && retry) {
+    await warmUp();
+    return listingPage(loc, collection, offset, false);
   }
-  const cards = data?.props?.pageProps?.widgetResponse?.success?.cards ?? [];
+  if (!res.ok) throw new Error(`listing responded ${res.status}`);
+
+  const json = await res.json();
+  // Swiggy answers 200 with an error envelope rather than an HTTP error status
+  const success = json?.data?.success ?? json?.success;
+  if (!success?.cards) throw new Error(json?.statusMessage || "listing returned no cards");
+  return success;
+}
+
+function restaurantsIn(success) {
   const found = [];
-  for (const card of cards) {
+  for (const card of success.cards ?? []) {
     const grid = card?.card?.card?.gridElements?.infoWithStyle?.restaurants;
     if (grid) found.push(...grid);
   }
   return found;
+}
+
+function collectionOf(success) {
+  const token = success?.pageOffset?.widgetOffset?.dineout_seo_restaurant;
+  if (!token) return null;
+  try {
+    return JSON.parse(Buffer.from(token, "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
 }
 
 const percent = (text) => {
@@ -129,25 +180,7 @@ function normalize(entry) {
     distanceKm: parseFloat(info.locationInfo?.distanceString) || 0,
     // bank/cashback offers live elsewhere in the payload and are deliberately not counted
     discount: Math.max(0, percent(info.vendorOffer?.info?.description), ...prebook),
-    link: entry.cta?.link || "",
   };
-}
-
-async function mapLimit(items, limit, fn) {
-  const results = new Array(items.length);
-  let cursor = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (cursor < items.length) {
-      const index = cursor++;
-      try {
-        results[index] = await fn(items[index]);
-      } catch {
-        results[index] = null;
-      }
-    }
-  });
-  await Promise.all(workers);
-  return results;
 }
 
 export async function findPlaces(input) {
@@ -208,24 +241,43 @@ export async function collectRestaurants(loc) {
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.value;
 
-  const pages = await mapLimit(LISTING_PATHS, LISTING_PATHS.length, (p) => getHtml(p, loc));
-  // Every page failing means Swiggy refused us, which is not the same as an area
-  // genuinely having no discounted restaurants — don't let it read as an empty result.
-  if (pages.every((p) => !p)) {
-    throw new Error("Swiggy refused every listing request (likely a WAF block).");
-  }
+  // A first-page failure means Swiggy refused us outright, which is not the same as an
+  // area having no discounted restaurants — let it surface rather than read as empty.
+  const first = await listingPage(loc, null, 0);
+  const collection = collectionOf(first);
 
-  const seen = new Map();
-  for (const html of pages) {
-    if (!html) continue;
-    for (const entry of restaurantsFrom(html)) {
+  const everySeen = new Set();
+  const discounted = new Map();
+  let reach = 0;
+
+  // Returns how many genuinely new restaurants a page contributed, so an exhausted
+  // list stops the paging even when none of them qualify on discount.
+  const absorb = (entries) => {
+    let added = 0;
+    for (const entry of entries) {
       const r = normalize(entry);
+      reach = Math.max(reach, r.distanceKm);
+      if (everySeen.has(r.id)) continue;
+      everySeen.add(r.id);
+      added++;
       // the lowest tier in the UI starts at 10%, so anything below it has no bucket
-      if (r.discount >= 10 && r.link && !seen.has(r.id)) seen.set(r.id, r);
+      if (r.discount >= 10) discounted.set(r.id, r);
     }
+    return added;
+  };
+  absorb(restaurantsIn(first));
+
+  // Results come back nearest-first, so paging stops once we pass what the UI can show.
+  for (let next = PAGE_SIZE; collection && next < MAX_PAGES * PAGE_SIZE; next += BATCH * PAGE_SIZE) {
+    const offsets = Array.from({ length: BATCH }, (_, i) => next + i * PAGE_SIZE);
+    const pages = await Promise.all(
+      offsets.map((offset) => listingPage(loc, collection, offset).catch(() => null))
+    );
+    const added = pages.reduce((n, p) => n + (p ? absorb(restaurantsIn(p)) : 0), 0);
+    if (!added || reach >= REACH_KM) break;
   }
 
-  const value = [...seen.values()].map(({ link, ...rest }) => rest);
+  const value = [...discounted.values()];
   if (value.length) cache.set(key, { at: Date.now(), value });
   return value;
 }
